@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fog of War — temporal debugger</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..900&family=Fragment+Mono:ital@0;1&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --ground:#0B0E14; --panel:#131824; --panel-2:#0F1420;
+    --line:#232B3D; --line-strong:#32405C;
+    --ink:#E8EBF2; --dim:#8B94A8; --faint:#5A6377;
+    --amber:#E8A33D; --amber-soft:rgba(232,163,61,.14); --amber-line:rgba(232,163,61,.45);
+    --leak:#E4553F; --leak-soft:rgba(228,85,63,.15);
+    --mono:"Fragment Mono",ui-monospace,Consolas,monospace;
+    --sans:"Archivo",system-ui,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--ground); color:var(--ink);
+    font-family:var(--sans); font-size:15px; line-height:1.5;
+    min-height:100vh;
+  }
+  ::selection{background:var(--amber-soft)}
+  button{font:inherit;color:inherit;background:none;border:none;cursor:pointer;padding:0}
+  button:focus-visible,select:focus-visible{outline:2px solid var(--amber);outline-offset:2px}
+
+  .wrap{max-width:1180px;margin:0 auto;padding:0 28px 48px}
+
+  /* ---------- header ---------- */
+  header{
+    display:flex;align-items:baseline;gap:20px;flex-wrap:wrap;
+    padding:26px 0 18px;border-bottom:1px solid var(--line);
+  }
+  .wordmark{
+    font-weight:850;font-stretch:112%;font-size:21px;letter-spacing:.22em;
+    text-transform:uppercase;white-space:nowrap;
+  }
+  .wordmark .fogged{color:var(--faint);position:relative}
+  .subtitle{color:var(--dim);font-size:13.5px}
+  .header-controls{margin-left:auto;display:flex;gap:14px;align-items:center;flex-wrap:wrap}
+  select{
+    background:var(--panel);color:var(--ink);border:1px solid var(--line-strong);
+    border-radius:6px;padding:7px 10px;font-family:var(--mono);font-size:12px;
+  }
+  .mode{
+    display:flex;border:1px solid var(--line-strong);border-radius:6px;overflow:hidden;
+    font-family:var(--mono);font-size:12px;
+  }
+  .mode button{padding:7px 14px;color:var(--dim)}
+  .mode button[aria-pressed="true"]{background:var(--amber-soft);color:var(--amber)}
+  .mode button+button{border-left:1px solid var(--line-strong)}
+
+  /* ---------- question / answer ---------- */
+  .ask{display:flex;gap:28px;align-items:flex-end;flex-wrap:wrap;padding:30px 0 8px}
+  .question{
+    font-size:clamp(22px,3.2vw,32px);font-weight:640;font-stretch:105%;
+    letter-spacing:-0.01em;max-width:26ch;text-wrap:balance;margin:0;
+  }
+  .asof{margin-left:auto;text-align:right}
+  .asof .label{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.12em;text-transform:uppercase}
+  .asof .value{font-family:var(--mono);font-size:19px;color:var(--amber);margin-top:2px}
+
+  /* ---------- timeline (signature) ---------- */
+  .timeline-block{margin-top:18px}
+  .tl-caption{
+    display:flex;justify-content:space-between;align-items:baseline;
+    font-family:var(--mono);font-size:11px;color:var(--faint);
+    letter-spacing:.1em;text-transform:uppercase;margin-bottom:8px;
+  }
+  .tl-caption .hint{text-transform:none;letter-spacing:0;color:var(--dim)}
+  .timeline{
+    position:relative;height:216px;border:1px solid var(--line);border-radius:10px;
+    background:linear-gradient(180deg,var(--panel-2),var(--panel));
+    overflow:hidden;touch-action:none;user-select:none;
+  }
+  .tl-axis{position:absolute;left:0;right:0;top:44px;height:1px;background:var(--line-strong)}
+  .tl-session{position:absolute;top:0;transform:translateX(-50%)}
+  .tl-tick{width:1px;height:14px;background:var(--line-strong);margin:37px auto 0}
+  .tl-date{
+    font-family:var(--mono);font-size:10.5px;color:var(--dim);
+    margin-top:4px;text-align:center;white-space:nowrap;
+  }
+  .tl-cards{position:absolute;left:0;right:0;top:78px;bottom:12px}
+  .tl-card{
+    position:absolute;width:190px;transform:translateX(-50%);
+    background:var(--panel);border:1px solid var(--line-strong);border-left:3px solid var(--amber);
+    border-radius:7px;padding:8px 10px;font-size:11.5px;line-height:1.4;
+    transition:filter .35s,opacity .35s;
+  }
+  .tl-card .who{font-family:var(--mono);font-size:9.5px;color:var(--faint);letter-spacing:.08em;text-transform:uppercase}
+  .tl-card .txt{
+    margin-top:3px;color:var(--ink);
+    display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;
+  }
+  .tl-card.foggy{filter:blur(3.5px) saturate(.35) brightness(.55);opacity:.55}
+  .tl-card.leaking{
+    filter:none;opacity:1;border-left-color:var(--leak);
+    box-shadow:0 0 22px rgba(228,85,63,.35);
+  }
+  .tl-card.leaking .who{color:var(--leak)}
+  .tl-card.tl-dot{
+    width:11px;height:11px;border-radius:3px;padding:0;border:none;
+    background:var(--amber);border-left:none;
+  }
+  .tl-card.tl-dot.foggy{background:var(--faint)}
+  .tl-card.tl-dot.leaking{background:var(--leak);box-shadow:0 0 14px rgba(228,85,63,.55)}
+  /* the veil */
+  .veil{
+    position:absolute;top:0;bottom:0;right:0;pointer-events:none;
+    background:
+      repeating-linear-gradient(115deg,rgba(90,99,119,.06) 0 3px,transparent 3px 9px),
+      linear-gradient(90deg,rgba(11,14,20,0) 0,rgba(11,14,20,.82) 34px,rgba(11,14,20,.86) 100%);
+  }
+  .veil::before{
+    content:"";position:absolute;left:0;top:0;bottom:0;width:1.5px;
+    background:linear-gradient(180deg,transparent,var(--amber-line) 22%,var(--amber-line) 78%,transparent);
+  }
+  .handle{
+    position:absolute;top:0;bottom:0;width:30px;transform:translateX(-50%);
+    cursor:grab;background:none;
+  }
+  .handle:active{cursor:grabbing}
+  .handle .grip{
+    position:absolute;left:50%;top:30px;transform:translate(-50%,-50%);
+    width:15px;height:15px;border-radius:50%;
+    background:var(--ground);border:2px solid var(--amber);
+    box-shadow:0 0 10px rgba(232,163,61,.5);
+  }
+  .tl-legend{
+    display:flex;gap:22px;margin-top:10px;font-family:var(--mono);
+    font-size:10.5px;color:var(--faint);flex-wrap:wrap;
+  }
+  .tl-legend .swatch{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+
+  /* ---------- panels ---------- */
+  .panels{display:grid;grid-template-columns:1.35fr 1fr;gap:20px;margin-top:30px}
+  @media (max-width:880px){.panels{grid-template-columns:1fr}}
+  .panel{
+    background:var(--panel-2);border:1px solid var(--line);border-radius:10px;
+    padding:18px 20px 20px;min-height:220px;
+  }
+  .panel h2{
+    font-size:12px;font-family:var(--mono);font-weight:400;color:var(--faint);
+    letter-spacing:.14em;text-transform:uppercase;margin:0 0 4px;
+  }
+  .panel .sub{font-size:12.5px;color:var(--dim);margin:0 0 14px}
+  .count-row{
+    display:flex;gap:26px;margin-bottom:14px;padding-bottom:12px;
+    border-bottom:1px solid var(--line);
+  }
+  .count .n{font-family:var(--mono);font-size:24px;color:var(--ink)}
+  .count .n.leakn{color:var(--leak)}
+  .count .n.zero{color:var(--amber)}
+  .count .l{font-size:11px;color:var(--faint);letter-spacing:.06em;text-transform:uppercase}
+  .ev-list{display:flex;flex-direction:column;gap:9px;max-height:330px;overflow-y:auto}
+  .ev{
+    border:1px solid var(--line);border-left:3px solid var(--amber);
+    border-radius:6px;padding:9px 12px;font-size:13px;background:var(--panel);
+  }
+  .ev .meta{
+    display:flex;justify-content:space-between;font-family:var(--mono);
+    font-size:10px;color:var(--faint);letter-spacing:.06em;text-transform:uppercase;margin-bottom:3px;
+  }
+  .ev.leak{border-left-color:var(--leak);background:var(--leak-soft)}
+  .ev.leak .meta .tag{color:var(--leak);font-weight:700}
+  .empty{color:var(--dim);font-size:13.5px;padding:14px 2px}
+  .empty b{color:var(--ink);font-weight:600}
+
+  /* abstention console */
+  .pair{
+    display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:13px;
+    padding:10px 12px;border:1px solid var(--line);border-radius:6px;
+    background:var(--panel);margin-bottom:14px;flex-wrap:wrap;
+  }
+  .pair .ent{color:var(--ink);background:var(--amber-soft);border:1px solid var(--amber-line);border-radius:4px;padding:2px 8px}
+  .pair .join{color:var(--faint)}
+  .verdict{border-radius:8px;padding:14px 16px;font-size:13.5px;line-height:1.55}
+  .verdict.abstain{border:1px solid var(--amber-line);background:var(--amber-soft)}
+  .verdict.abstain .head{color:var(--amber);font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:6px}
+  .verdict.found{border:1px solid var(--line-strong);background:var(--panel)}
+  .verdict.found .head{color:var(--dim);font-family:var(--mono);font-size:11px;letter-spacing:.12em;text-transform:uppercase;margin-bottom:6px}
+  .verdict .quote{
+    font-family:var(--mono);font-size:12px;color:var(--ink);border-left:2px solid var(--line-strong);
+    padding-left:10px;margin-top:8px;
+  }
+  .trace{
+    margin-top:12px;font-family:var(--mono);font-size:10.5px;color:var(--faint);
+    line-height:1.7;overflow-x:auto;white-space:pre;
+  }
+  .trace .k{color:var(--dim)}
+
+  /* ---------- metrics footer ---------- */
+  .metrics{
+    margin-top:34px;border-top:1px solid var(--line);padding-top:18px;
+    display:flex;gap:38px;flex-wrap:wrap;
+  }
+  .metric .v{font-family:var(--mono);font-size:19px}
+  .metric .v .ok{color:var(--amber)}
+  .metric .v .bad{color:var(--leak)}
+  .metric .k{font-size:11px;color:var(--faint);margin-top:2px;max-width:230px;line-height:1.45}
+  .status{
+    margin-left:auto;align-self:flex-start;font-family:var(--mono);font-size:11px;color:var(--faint);
+  }
+  .status .live{color:var(--amber)}
+  .status.err{color:var(--leak)}
+
+  @media (prefers-reduced-motion:reduce){
+    .tl-card{transition:none}
+  }
+  @media (max-width:720px){
+    .wrap{padding:0 16px 40px}
+    .asof{margin-left:0;text-align:left}
+    .tl-card{width:150px}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="wordmark">Fog <span class="fogged">of War</span></div>
+    <div class="subtitle">What did we know, and when did we know it &mdash; live on HydraDB</div>
+    <div class="header-controls">
+      <select id="scenario" aria-label="Scenario"></select>
+      <div class="mode" role="group" aria-label="Retrieval mode">
+        <button id="mode-fog" aria-pressed="true" title="Filter evidence on t_commit &le; as-of">fog (t_commit &le; t)</button>
+        <button id="mode-naive" aria-pressed="false" title="No temporal filter — how most retrieval works">naive (no filter)</button>
+      </div>
+    </div>
+  </header>
+
+  <div class="ask">
+    <h1 class="question" id="question">&nbsp;</h1>
+    <div class="asof">
+      <div class="label">Answering as of</div>
+      <div class="value" id="asof-value">&mdash;</div>
+    </div>
+  </div>
+
+  <div class="timeline-block">
+    <div class="tl-caption">
+      <span>Conversation history</span>
+      <span class="hint">drag the boundary &mdash; it snaps to sessions</span>
+    </div>
+    <div class="timeline" id="timeline">
+      <div class="tl-axis"></div>
+      <div id="tl-sessions"></div>
+      <div class="tl-cards" id="tl-cards"></div>
+      <div class="veil" id="veil"></div>
+      <button class="handle" id="handle" aria-label="Knowledge boundary — arrow keys move between sessions">
+        <span class="grip"></span>
+      </button>
+    </div>
+    <div class="tl-legend">
+      <span><span class="swatch" style="background:var(--amber)"></span>knowable (committed on or before the boundary)</span>
+      <span><span class="swatch" style="background:var(--faint);opacity:.6"></span>fogged (exists, not yet knowable)</span>
+      <span id="legend-leak" hidden><span class="swatch" style="background:var(--leak)"></span>leaking through (naive mode returns these)</span>
+    </div>
+  </div>
+
+  <div class="panels">
+    <section class="panel">
+      <h2 id="ev-title">Returned evidence</h2>
+      <p class="sub" id="ev-sub">Every row below came back from the live query just now.</p>
+      <div class="count-row">
+        <div class="count"><div class="n" id="n-known">&ndash;</div><div class="l">messages returned</div></div>
+        <div class="count"><div class="n zero" id="n-leaked">&ndash;</div><div class="l">from the future</div></div>
+      </div>
+      <div class="ev-list" id="ev-list"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Verified abstention</h2>
+      <p class="sub">Do these two co-occur in anything knowable at the boundary?</p>
+      <div class="pair">
+        <span class="ent" id="pair-a"></span>
+        <span class="join">&mdash;[:MENTIONS]&mdash;</span>
+        <span class="ent" id="pair-b"></span>
+      </div>
+      <div id="verdict"></div>
+      <div class="trace" id="trace"></div>
+    </section>
+  </div>
+
+  <div class="metrics">
+    <div class="metric">
+      <div class="v"><span class="ok">0.0000</span> vs <span class="bad">0.4254</span></div>
+      <div class="k">mean leakage, fog vs naive &mdash; full LongMemEval-s benchmark, 255 evaluable questions, measured</div>
+    </div>
+    <div class="metric">
+      <div class="v"><span class="ok">0.00</span> vs <span class="bad">0.12</span></div>
+      <div class="k">mean leakage, fog vs naive &mdash; 100 oracle (evidence-only) instances, measured</div>
+    </div>
+    <div class="metric">
+      <div class="v">500<span style="color:var(--faint)">/500</span></div>
+      <div class="k">LongMemEval-s instances ingested into this database (&asymp;258k turns)</div>
+    </div>
+    <div class="status" id="status">connecting&hellip;</div>
+  </div>
+
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var state = {
+    scenario: null, scenarios: [], sessions: [],
+    asOf: null, mode: "fog", evidence: [], allEvidence: [],
+    dragging: false
+  };
+  var $ = function(id){ return document.getElementById(id); };
+  var tl = $("timeline");
+
+  function fmtDate(ms){
+    var d = new Date(ms);
+    return d.toLocaleDateString("en-US", {year:"numeric", month:"short", day:"numeric"});
+  }
+  function setStatus(text, isErr){
+    var el = $("status");
+    el.className = "status" + (isErr ? " err" : "");
+    el.innerHTML = isErr ? text : text;
+  }
+  function api(path){
+    return fetch(path).then(function(r){
+      return r.json().then(function(j){
+        if (!r.ok) throw new Error(j.error || r.status);
+        return j;
+      });
+    });
+  }
+
+  /* position helpers: map t_commit to [7%, 93%] of the band */
+  function xFor(t){
+    var s = state.sessions;
+    if (s.length < 2) return 50;
+    var lo = s[0].t_commit, hi = s[s.length-1].t_commit;
+    if (hi === lo) return 50;
+    return 7 + 86 * (t - lo) / (hi - lo);
+  }
+
+  function renderTimeline(){
+    var dense = state.sessions.length > 8;
+    var labelEvery = dense ? Math.ceil(state.sessions.length / 6) : 1;
+    var sess = $("tl-sessions"); sess.innerHTML = "";
+    var lastLabeledDay = null;
+    state.sessions.forEach(function(s, i){
+      var el = document.createElement("div");
+      el.className = "tl-session";
+      el.style.left = xFor(s.t_commit) + "%";
+      var day = fmtDate(s.t_commit);
+      var label = (i % labelEvery === 0 && day !== lastLabeledDay) ? day : "";
+      if (label) lastLabeledDay = day;
+      el.innerHTML = '<div class="tl-tick"></div><div class="tl-date">' + label + "</div>";
+      sess.appendChild(el);
+    });
+    var cards = $("tl-cards"); cards.innerHTML = "";
+    /* group evidence per session-timestamp; stagger vertically */
+    var byT = {};
+    state.allEvidence.forEach(function(e){
+      (byT[e.t_commit] = byT[e.t_commit] || []).push(e);
+    });
+    Object.keys(byT).forEach(function(t){
+      byT[t].forEach(function(e, i){
+        var el = document.createElement("div");
+        el.dataset.t = e.t_commit;
+        if (dense){
+          /* compact marker: the evidence panel carries the content */
+          el.className = "tl-card tl-dot";
+          el.style.left = xFor(+t) + "%";
+          el.style.top = (i * 18) + "px";
+          el.title = e.content.slice(0, 140);
+        } else {
+          el.className = "tl-card";
+          el.style.left = xFor(+t) + "%";
+          el.style.top = (i * 46) + "px";
+          el.style.zIndex = String(10 - i);
+          el.innerHTML = '<div class="who">' + fmtDate(e.t_commit) + '</div>'
+            + '<div class="txt"></div>';
+          el.querySelector(".txt").textContent = e.content;
+        }
+        cards.appendChild(el);
+      });
+    });
+    updateFog();
+  }
+
+  function updateFog(){
+    var pct = xFor(state.asOf);
+    var w = tl.getBoundingClientRect().width;
+    var px = w * pct / 100;
+    $("veil").style.width = Math.max(0, w - px) + "px";
+    $("handle").style.left = pct + "%";
+    document.querySelectorAll(".tl-card").forEach(function(el){
+      var t = +el.dataset.t;
+      var future = t > state.asOf;
+      el.classList.toggle("foggy", future && !(state.mode === "naive"));
+      el.classList.toggle("leaking", future && state.mode === "naive");
+    });
+    $("asof-value").textContent = fmtDate(state.asOf);
+  }
+
+  function renderEvidence(){
+    var list = $("ev-list"); list.innerHTML = "";
+    var leaked = state.evidence.filter(function(e){ return e.leaked; }).length;
+    $("n-known").textContent = String(state.evidence.length);
+    var nl = $("n-leaked");
+    nl.textContent = String(leaked);
+    nl.className = "n " + (leaked > 0 ? "leakn" : "zero");
+    $("ev-title").textContent = state.mode === "fog"
+      ? "Returned evidence — t_commit ≤ boundary"
+      : "Returned evidence — no temporal filter";
+    $("ev-sub").textContent = state.mode === "fog"
+      ? "Every row came back from the live filtered query. Zero from the future is guaranteed by the WHERE clause, not by luck."
+      : "This is how most retrieval behaves: whatever mentions the subject, whenever it was learned.";
+    if (!state.evidence.length){
+      var d = document.createElement("div");
+      d.className = "empty";
+      d.innerHTML = "Nothing knowable about <b></b> at this boundary.";
+      d.querySelector("b").textContent = state.scenario.subject;
+      list.appendChild(d);
+      return;
+    }
+    state.evidence.forEach(function(e){
+      var el = document.createElement("div");
+      el.className = "ev" + (e.leaked ? " leak" : "");
+      el.innerHTML = '<div class="meta"><span>' + fmtDate(e.t_commit) + '</span>'
+        + (e.leaked ? '<span class="tag">from the future</span>' : '')
+        + '</div><div class="body"></div>';
+      el.querySelector(".body").textContent = e.content;
+      list.appendChild(el);
+    });
+  }
+
+  function renderVerdict(res){
+    var v = $("verdict");
+    var a = state.scenario.abstain_subject, b = state.scenario.abstain_object;
+    if (res.should_abstain){
+      v.innerHTML = '<div class="verdict abstain"><div class="head">Abstains &mdash; verified zero</div>'
+        + 'No knowable message links <b></b> and <b></b> on or before ' + fmtDate(state.asOf)
+        + '. The exact pattern was traversed and returned zero rows &mdash; a checked fact, not a low confidence score.</div>';
+      var bs = v.querySelectorAll("b"); bs[0].textContent = a; bs[1].textContent = b;
+    } else {
+      v.innerHTML = '<div class="verdict found"><div class="head">Evidence found</div>'
+        + 'A knowable message links both:'
+        + '<div class="quote"></div></div>';
+      v.querySelector(".quote").textContent = res.evidence_content || "";
+    }
+    $("trace").innerHTML =
+      '<span class="k">pattern</span>  (a {id})&lt;-[:MENTIONS]-(t:Turn)-[:MENTIONS]-&gt;(b {id})\n'
+      + '<span class="k">where</span>    t.t_commit &lt;= ' + state.asOf + ' <span class="k">and</span> t.question_id = "' + state.scenario.question_id + '"\n'
+      + '<span class="k">result</span>   ' + (res.should_abstain ? "0 rows" : "match, turn " + res.evidence_turn_id);
+  }
+
+  function refresh(){
+    if (!state.scenario) return;
+    setStatus('querying HydraDB…');
+    var q = state.scenario.question_id, sub = encodeURIComponent(state.scenario.subject);
+    Promise.all([
+      api("/api/reconstruct?question=" + q + "&entity=" + sub + "&asOf=" + state.asOf + "&mode=" + state.mode),
+      api("/api/abstain?question=" + q
+        + "&subject=" + encodeURIComponent(state.scenario.abstain_subject)
+        + "&object=" + encodeURIComponent(state.scenario.abstain_object)
+        + "&asOf=" + state.asOf)
+    ]).then(function(res){
+      state.evidence = res[0].evidence;
+      renderEvidence();
+      renderVerdict(res[1]);
+      setStatus('<span class="live">&#9679;</span> live &mdash; last query ' + new Date().toLocaleTimeString());
+    }).catch(function(err){
+      setStatus("query failed: " + err.message, true);
+    });
+  }
+
+  function loadScenario(qid){
+    state.scenario = state.scenarios.find(function(s){ return s.question_id === qid; });
+    $("question").textContent = state.scenario.question;
+    $("pair-a").textContent = state.scenario.abstain_subject;
+    $("pair-b").textContent = state.scenario.abstain_object;
+    api("/api/timeline?question=" + qid).then(function(sessions){
+      state.sessions = sessions;
+      state.asOf = sessions.length
+        ? sessions[Math.floor((sessions.length - 1) / 2)].t_commit
+        : Date.now();
+      /* full unfiltered set once, for laying out the world on the timeline */
+      return api("/api/reconstruct?question=" + qid + "&entity="
+        + encodeURIComponent(state.scenario.subject) + "&asOf=" + state.asOf + "&mode=naive");
+    }).then(function(res){
+      state.allEvidence = res.evidence;
+      renderTimeline();
+      refresh();
+    }).catch(function(err){ setStatus("load failed: " + err.message, true); });
+  }
+
+  /* ------- drag / keys ------- */
+  function snapTo(clientX){
+    var rect = tl.getBoundingClientRect();
+    var pct = 100 * (clientX - rect.left) / rect.width;
+    var best = null, bestD = 1e9;
+    state.sessions.forEach(function(s){
+      var d = Math.abs(xFor(s.t_commit) - pct);
+      if (d < bestD){ bestD = d; best = s; }
+    });
+    return best;
+  }
+  var handle = $("handle");
+  handle.addEventListener("pointerdown", function(ev){
+    state.dragging = true; handle.setPointerCapture(ev.pointerId);
+  });
+  handle.addEventListener("pointermove", function(ev){
+    if (!state.dragging) return;
+    var rect = tl.getBoundingClientRect();
+    var pct = Math.min(94, Math.max(6, 100 * (ev.clientX - rect.left) / rect.width));
+    handle.style.left = pct + "%";
+    $("veil").style.width = (rect.width * (100 - pct) / 100) + "px";
+  });
+  handle.addEventListener("pointerup", function(ev){
+    state.dragging = false;
+    var s = snapTo(ev.clientX);
+    if (s){ state.asOf = s.t_commit; updateFog(); refresh(); }
+  });
+  tl.addEventListener("pointerdown", function(ev){
+    if (ev.target === handle || handle.contains(ev.target)) return;
+    var s = snapTo(ev.clientX);
+    if (s){ state.asOf = s.t_commit; updateFog(); refresh(); }
+  });
+  handle.addEventListener("keydown", function(ev){
+    var idx = state.sessions.findIndex(function(s){ return s.t_commit === state.asOf; });
+    if (ev.key === "ArrowLeft" && idx > 0) idx -= 1;
+    else if (ev.key === "ArrowRight" && idx < state.sessions.length - 1) idx += 1;
+    else return;
+    ev.preventDefault();
+    state.asOf = state.sessions[idx].t_commit;
+    updateFog(); refresh();
+  });
+  window.addEventListener("resize", updateFog);
+
+  /* ------- mode toggle ------- */
+  function setMode(m){
+    state.mode = m;
+    $("mode-fog").setAttribute("aria-pressed", String(m === "fog"));
+    $("mode-naive").setAttribute("aria-pressed", String(m === "naive"));
+    $("legend-leak").hidden = (m !== "naive");
+    updateFog(); refresh();
+  }
+  $("mode-fog").addEventListener("click", function(){ setMode("fog"); });
+  $("mode-naive").addEventListener("click", function(){ setMode("naive"); });
+
+  /* ------- boot ------- */
+  api("/api/scenarios").then(function(scenarios){
+    state.scenarios = scenarios;
+    var sel = $("scenario");
+    scenarios.forEach(function(s){
+      var o = document.createElement("option");
+      o.value = s.question_id; o.textContent = s.label;
+      sel.appendChild(o);
+    });
+    sel.addEventListener("change", function(){ loadScenario(sel.value); });
+    loadScenario(scenarios[0].question_id);
+  }).catch(function(err){
+    setStatus("server unreachable: " + err.message, true);
+  });
+})();
+</script>
+</body>
+</html>

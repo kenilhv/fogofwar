@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Datasets (fetched by scripts/download_longmemeval.py — ~290MB)
+data/raw/
+data/*.json
+
+# Local runtime state
+hydradb-data/
+*.log
+.env
+
+# Editor / tooling config
+.claude/
+.vscode/
+.idea/
+
+# Regenerated locally by uv; the documented install path is pip (see README)
+uv.lock
