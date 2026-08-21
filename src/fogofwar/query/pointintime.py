@@ -23,12 +23,6 @@ RETURN t.id AS turn_id, t.content AS content, t.role AS role, t.t_commit AS t_co
 ORDER BY t.t_commit DESC
 """
 
-SESSION_T_COMMIT = """
-MATCH (s:Session {question_id: $questionId})
-WHERE s.order_index = $orderIndex
-RETURN s.t_commit AS t_commit
-"""
-
 
 @dataclass(frozen=True)
 class TurnEvidence:
@@ -73,15 +67,3 @@ def reconstruct_as_of(
         )
         for row in rows
     ]
-
-
-def session_t_commit(client: HydraDBClient, question_id: str, order_index: int) -> int:
-    """Looks up the t_commit of a session by its position in a question's haystack."""
-    rows = client.read(
-        SESSION_T_COMMIT, {"questionId": question_id, "orderIndex": order_index}
-    )
-    if not rows:
-        raise ValueError(
-            f"No session found for question_id={question_id!r} order_index={order_index}"
-        )
-    return rows[0]["t_commit"]

@@ -6,6 +6,8 @@ Built for [Hack Hydra](https://hackhydra.hydradb.com/) (Track 03 — Memory + Co
 
 > *In a strategy game, "fog of war" means you only see what your units have actually scouted — everything past that boundary is genuinely hidden, not guessed at. That's the honesty this system enforces for agent memory: know exactly what you knew, and exactly when you stopped knowing more.*
 
+**Where's HydraDB?** It runs as the server this project talks to over Bolt — every fact stored and every question answered goes through it, with no secondary store, cache, or in-memory index anywhere. The twelve Cypher statements, the bitemporal model, the primitives that are load-bearing, and what breaks without each are mapped line by line in **[`docs/HYDRADB.md`](docs/HYDRADB.md)**.
+
 ---
 
 ## The problem
@@ -98,11 +100,14 @@ Ingesting all 500 instances takes tens of minutes. `scripts/run_campaign.ps1` (W
 
 ## How HydraDB is used (and what breaks without it)
 
-Three of its specific, documented primitives are load-bearing:
+**Full map with file:line citations: [`docs/HYDRADB.md`](docs/HYDRADB.md).** In brief — four of its primitives are load-bearing:
 
-- **Bitemporal edges.** Every turn carries `t_commit` alongside valid-time — the exact `(u, r, v, t_commit, t_valid)` shape from HydraDB's own memory-layer write-up, applied to a different problem: guaranteeing a query answered "as of" a point in a conversation cannot use information from later in that conversation. A vector index has no equivalent of this filter; a system without commit-time cannot express the question at all.
-- **The documented Cypher subset, respected exactly.** No `IN`, no `IS NULL`, one relationship type per pattern, one statement per request, `UNWIND … MERGE … SET` as the only batched-write shape. Every query in this repo was written inside those constraints and validated against the live parser — see `src/fogofwar/schema.py`'s docstring for the accommodations that requires (integer node ids via stable hashing, an `i64::MAX` sentinel instead of NULL for open validity intervals).
-- **Causal vs. strong read consistency**, wired through the client layer: `causal` for the demo's interactive polling, `strong` reserved for a final answer that must be provably fresh.
+- **Bitemporal edges.** Every turn carries `t_commit` (when the system learned it) alongside valid-time — the `(u, r, v, t_commit, t_valid, m)` shape from HydraDB's own memory-layer write-up, applied to a problem it wasn't proposed for: guaranteeing a query answered "as of" a point in a conversation cannot cite evidence learned later. Filtering `t_valid` instead answers a different, wrong question — a backdated correction is *valid* early but was not *knowable* early.
+- **Two-hop traversal as the abstention mechanism.** `(subject)<-[:MENTIONS]-(Turn)-[:MENTIONS]->(object)` returning zero rows is a checked fact. A vector index cannot express this query, let alone return a meaningful empty result — similarity search always hands back a ranked list.
+- **`MERGE` idempotency as a reliability primitive.** Because every write is `UNWIND … MERGE … SET`, retrying a batch is safe by construction — which is what makes ingesting 500 haystacks resumable in strides.
+- **Causal vs. strong read consistency**, wired through the client layer: `causal` for interactive polling, `strong` for a result that must be provably fresh before it's reported as final.
+
+Designing inside the documented Cypher subset (no `IN`, no `IS NULL`, no `CONTAINS`, one relationship type per pattern, one statement per request) shaped the schema directly: integer node ids via stable hashing, an `i64::MAX` sentinel instead of NULL for open validity intervals, and co-occurrence expressed as two single-type hops through a shared `Turn`.
 
 ## Repository layout
 
@@ -124,6 +129,7 @@ scripts/
   run_campaign.ps1         supervised, resumable ingest in fresh-process strides
   demo_server.py           stdlib JSON shim serving the demo UI from live queries
 demo/index.html            the temporal-debugger UI
+docs/HYDRADB.md            every Cypher statement, primitive, and access-pattern lesson
 docs/architecture.md       formal claims, ablation design, limitations
 tests/                     35 tests; every live-discovered bug has a regression test
 ```
