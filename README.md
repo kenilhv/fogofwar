@@ -19,11 +19,116 @@ Two things go wrong in most agent memory systems, and both are **silent** failur
 
 Both are one underlying gap in how memory systems handle time: they track *when something became true* (valid-time) but not *when the system itself learned it* (commit-time). Fog of War fixes both using the commit-time axis that HydraDB's bitemporal edge model already carries.
 
+### What hindsight leakage looks like
+
+A question honestly posed about 2 May must not be answered with a fact the system
+only learned on 1 July — even though that fact is sitting right there in the graph:
+
+```mermaid
+flowchart TB
+    Q["<b>Who owns the migration?</b><br/>asked as of 2 May"]
+
+    subgraph HIST["conversation history, stored in HydraDB"]
+      direction LR
+      T1["<b>12 Mar</b><br/>Priya owns<br/>the migration"]
+      T2["<b>2 May</b><br/>blocked on<br/>AUTH-503"]
+      T3["<b>1 Jul</b><br/>Tom owns it now<br/><i>not yet knowable</i>"]
+      T1 --- T2 --- T3
+    end
+
+    Q --> FOG["<b>Fog of War</b><br/>WHERE t_commit &lt;= 2 May"]
+    Q --> NAIVE["<b>Naive retrieval</b><br/>no temporal filter"]
+
+    FOG -->|"reads 12 Mar + 2 May"| A1["answers <b>Priya</b><br/>0% of evidence leaked"]
+    NAIVE -->|"also reads 1 Jul"| A2["answers <b>Tom</b><br/>cites a fact from the future"]
+
+    style T3 fill:#5c1f1f,stroke:#e4553f,color:#fff
+    style A1 fill:#1f3d2b,stroke:#3fa96a,color:#fff
+    style A2 fill:#5c1f1f,stroke:#e4553f,color:#fff
+```
+
+Both answers are *defensible retrievals*. Only one is honest about time. Measured
+across the full benchmark, the naive path's evidence is **42.5% from the future**.
+
 ## The two mechanisms
 
 **1 — Point-in-time reconstruction (No-Leakage).** Every ingested turn carries `t_commit`, the timestamp at which the system learned it. A query answered "as of" reference point R filters on `t_commit <= R` — so evidence from after R is excluded *by the WHERE clause itself*, not by a reranker's judgment. The formal property and its (short) proof sketch are in [`docs/architecture.md`](docs/architecture.md).
 
 **2 — Structural abstention, as a routing decision.** For the subset of questions that reduce to an exact relationship check ("do X and Y co-occur in anything we were told?"), a bounded graph traversal that returns **zero rows is a checked fact** — categorically different from a similarity score falling below an arbitrary threshold. Confidence-based retrieval remains the right tool for genuinely fuzzy questions and is untouched; this mechanism only claims the structurally decidable slice, and we measure how big that slice actually is rather than asserting it.
+
+The check is a two-hop traversal through a shared `Turn`. If no such turn exists
+within the knowable window, there is nothing to answer *from* — and that absence is
+the answer:
+
+```mermaid
+flowchart LR
+    SUBJ(["Entity<br/><b>Tom Chen</b>"])
+    T["Turn<br/>t_commit &lt;= R"]
+    OBJ(["Entity<br/><b>Ontology Migration</b>"])
+
+    SUBJ -->|"MENTIONS"| T
+    T -->|"MENTIONS"| OBJ
+
+    T -.->|"match found"| ANS["answer, citing that turn"]
+    T -.->|"<b>zero rows</b>"| ABS["<b>abstain</b><br/>verified absence,<br/>not a low score"]
+
+    style ABS fill:#4a3410,stroke:#e8a33d,color:#fff
+```
+
+## Architecture
+
+Every fact stored and every question answered goes through HydraDB. There is no
+secondary store, no cache, and no in-memory index anywhere in the system:
+
+```mermaid
+flowchart TB
+    SRC["LongMemEval JSON<br/>500 haystacks, ~258k turns"]
+    XFORM["ingest/longmemeval.py<br/><i>pure transform, no I/O</i><br/>dedupe · content cap · DF pruning"]
+    CLIENT["client.py<br/>Bolt 5.x · bearer auth<br/>idempotent MERGE + retry"]
+
+    DB[("<b>HydraDB</b><br/>Session · Turn · Entity<br/>CONTAINS · MENTIONS<br/>every t_commit")]
+
+    PIT["query/pointintime.py<br/><b>No-Leakage query</b>"]
+    ABST["query/abstention.py<br/><b>structural check</b>"]
+    BASE["eval/baseline.py + eval/flat.py<br/>comparison baselines"]
+
+    UI["demo_server.py → demo UI<br/><i>stdlib shim, holds no state</i>"]
+    EVAL["run_demo.py · run_abstention_eval.py<br/>Leakage Rate · Wilson intervals"]
+
+    SRC --> XFORM --> CLIENT -->|"UNWIND ... MERGE ... SET"| DB
+    DB -->|"causal reads"| PIT
+    DB -->|"causal reads"| ABST
+    DB -->|"causal reads"| BASE
+    PIT --> UI
+    ABST --> UI
+    PIT --> EVAL
+    ABST --> EVAL
+    BASE --> EVAL
+
+    style DB fill:#1a2340,stroke:#7b8cd4,color:#fff
+```
+
+### The graph model
+
+Three vertex types, two relationship types. `t_commit` — *when the system learned
+it* — is the property every claim in this project rests on:
+
+```mermaid
+flowchart LR
+    S["<b>Session</b><br/>id · question_id<br/>order_index · t_commit"]
+    T["<b>Turn</b><br/>id · role · content<br/>has_answer · question_id<br/><b>t_commit</b>"]
+    E["<b>Entity</b><br/>id · name"]
+
+    S -->|"CONTAINS<br/><i>turn_index</i>"| T
+    T -->|"MENTIONS"| E
+
+    style T fill:#4a3410,stroke:#e8a33d,color:#fff
+```
+
+Entity vertices are **global** — shared across all 500 questions — which is what makes
+cross-question identity possible and also what makes a popular entity expensive to
+traverse. That trade-off, and the id-keyed access patterns that keep queries fast, are
+in [`docs/HYDRADB.md`](docs/HYDRADB.md).
 
 ## Measured results
 
